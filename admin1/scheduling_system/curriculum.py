@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from posixpath import normpath
 from xml.etree import ElementTree
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 
 def read_xlsx(path: Path) -> dict[str, dict[str, list[str]]]:
@@ -19,7 +19,11 @@ def read_xlsx(path: Path) -> dict[str, dict[str, list[str]]]:
     relationships_namespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     package_namespace = "http://schemas.openxmlformats.org/package/2006/relationships"
     ns = {"m": namespace}
-    with ZipFile(path) as workbook:
+    try:
+        workbook = ZipFile(path)
+    except BadZipFile as error:
+        raise ValueError("The file is not a valid Excel workbook (.xlsx)") from error
+    with workbook:
         shared_strings: list[str] = []
         if "xl/sharedStrings.xml" in workbook.namelist():
             root = ElementTree.fromstring(workbook.read("xl/sharedStrings.xml"))
@@ -55,7 +59,12 @@ def read_xlsx(path: Path) -> dict[str, dict[str, list[str]]]:
                     value_node = cell.find("m:v", ns)
                     value = value_node.text if value_node is not None else ""
                     if cell.attrib.get("t") == "s" and value:
-                        value = shared_strings[int(value)]
+                        try:
+                            value = shared_strings[int(value)]
+                        except (IndexError, ValueError) as error:
+                            raise ValueError(
+                                "The workbook contains an invalid shared string reference"
+                            ) from error
                 values[column] = value.strip()
             rows.append(values)
 

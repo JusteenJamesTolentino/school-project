@@ -290,11 +290,6 @@ class SchedulingApp:
                 self.program_list.selection_set(program_index)
                 self.program_list.activate(program_index)
             self.program_list.bind("<<ListboxSelect>>", self._program_changed)
-            program_actions = ttk.Frame(department_content, style="Panel.TFrame")
-            program_actions.pack(fill="x", pady=(8, 0))
-            ttk.Button(program_actions, text="Edit", command=self.edit_selected_program).pack(side="left")
-            ttk.Button(program_actions, text="Delete", style="Danger.TButton",
-                       command=self.delete_selected_program).pack(side="left", padx=(5, 0))
         else:
             department_content.pack_propagate(False)
             ttk.Label(department_content, text="Select a department to view programs.", style="Muted.TLabel",
@@ -311,13 +306,7 @@ class SchedulingApp:
         self.professor_list.pack(fill="both", expand=True)
         for professor in self._visible_professors():
             self.professor_list.insert("end", professor.name)
-        self.professor_list.bind("<<ListboxSelect>>", self._professor_changed)
-        self.professor_list.bind("<Double-Button-1>", self._edit_selected_professor)
-        professor_actions = ttk.Frame(professor_content, style="Panel.TFrame")
-        professor_actions.pack(fill="x", pady=(8, 0))
-        ttk.Button(professor_actions, text="Edit", command=self._edit_selected_professor).pack(side="left")
-        ttk.Button(professor_actions, text="Delete", style="Danger.TButton",
-                   command=self.delete_selected_professor).pack(side="left", padx=(5, 0))
+        self.professor_list.bind("<Double-Button-1>", self._open_professor_options)
 
         _, day_content = self._column("Day", 135)
         day_list = tk.Listbox(
@@ -574,6 +563,7 @@ class SchedulingApp:
                 self.selected_program.get(), department.code
             )
         self._refresh_board()
+        self._open_program_options()
 
     def _day_changed(self, day_list: tk.Listbox) -> None:
         selection = day_list.curselection()
@@ -594,12 +584,6 @@ class SchedulingApp:
         selection = subject_type_list.curselection()
         if selection:
             self.selected_subject_type.set(subject_type_list.get(selection[0]))
-
-    def _professor_changed(self, _event: tk.Event | None = None) -> None:
-        selection = self.professor_list.curselection()
-        if selection:
-            professor = self._visible_professors()[selection[0]]
-            self.open_edit_professor_dialog(professor)
 
     def show_notice(self, message: str) -> None:
         self.notice.set(message)
@@ -1000,12 +984,60 @@ class SchedulingApp:
         self._refresh_board()
         self.show_notice(f"{name} assigned to {len(programs)} program{'s' if len(programs) != 1 else ''}")
 
-    def _edit_selected_professor(self, _event: tk.Event | None = None) -> None:
+    def _open_professor_options(self, _event: tk.Event | None = None) -> None:
         selection = self.professor_list.curselection()
         if not selection:
             return
         professor = self._visible_professors()[selection[0]]
-        self.open_edit_professor_dialog(professor)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Professor options")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("320x250")
+        frame = ttk.Frame(dialog, padding=24)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=professor.name, font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        ttk.Label(
+            frame, text=f"{professor.department} — choose an action.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(2, 16))
+        ttk.Button(
+            frame, text="Edit", style="Action.TButton",
+            command=lambda: (dialog.destroy(), self.open_edit_professor_dialog(professor)),
+        ).pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            frame, text="Delete", style="Danger.TButton",
+            command=lambda: (dialog.destroy(), self.delete_selected_professor()),
+        ).pack(fill="x", pady=(0, 8))
+        ttk.Button(frame, text="Cancel", command=dialog.destroy).pack(fill="x")
+
+    def _open_program_options(self, _event: tk.Event | None = None) -> None:
+        department = self._active_department()
+        selection = self.program_list.curselection()
+        if not department or not selection:
+            return
+        program = self.program_list.get(selection[0])
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Program options")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("320x250")
+        frame = ttk.Frame(dialog, padding=24)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=program, font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        ttk.Label(
+            frame, text=f"{department.code} — choose an action.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(2, 16))
+        ttk.Button(
+            frame, text="Edit", style="Action.TButton",
+            command=lambda: (dialog.destroy(), self.edit_selected_program()),
+        ).pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            frame, text="Delete", style="Danger.TButton",
+            command=lambda: (dialog.destroy(), self.delete_selected_program()),
+        ).pack(fill="x", pady=(0, 8))
+        ttk.Button(frame, text="Cancel", command=dialog.destroy).pack(fill="x")
 
     def open_edit_professor_dialog(self, professor: Professor) -> None:
         dialog = tk.Toplevel(self.root)

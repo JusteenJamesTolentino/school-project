@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
 from scheduling_system.models import Department, Professor
@@ -10,7 +13,19 @@ from scheduling_system.models import Department, Professor
 
 class Database:
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or Path(__file__).with_name("scheduling.db")
+        if path is not None:
+            self.path = path
+        elif getattr(sys, "frozen", False):
+            # Keep editable data outside the PyInstaller bundle. In one-file
+            # mode, files beside __file__ live in a temporary extraction dir.
+            data_root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Admin1"
+            data_root.mkdir(parents=True, exist_ok=True)
+            self.path = data_root / "scheduling.db"
+            bundled_database = Path(__file__).with_name("scheduling.db")
+            if not self.path.exists() and bundled_database.exists():
+                shutil.copy2(bundled_database, self.path)
+        else:
+            self.path = Path(__file__).with_name("scheduling.db")
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
         self._create_schema()
@@ -401,7 +416,7 @@ class Database:
         old_code, old_name = self._split_subject(old_subject)
         new_subject = self._format_subject(subject_code, subject_name)
         with self.connection:
-            self.connection.execute(
+            cursor = self.connection.execute(
                 """
                 UPDATE curricula
                 SET subject = ?, subject_code = ?, subject_name = ?
@@ -414,6 +429,11 @@ class Database:
                     year, semester, old_code, old_name,
                 ),
             )
+            if cursor.rowcount == 0:
+                raise ValueError(
+                    "Subject not found in this curriculum; it may have changed. "
+                    "Reopen the subject and try again."
+                )
 
     def close(self) -> None:
         self.connection.close()

@@ -8,6 +8,7 @@ import tempfile
 import tkinter as tk
 import unittest
 from pathlib import Path
+from tkinter import ttk
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
@@ -196,6 +197,122 @@ class DialogFlowTests(unittest.TestCase):
         self.assertIn("Jane Doe (COE)", ask.call_args[0][1])
         self.assertIn("1 program assignment", ask.call_args[0][1])
         self.assertEqual([p.name for p in self.db.load_professors()], ["Jane Doe"])
+
+
+class BugFixRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk display unavailable: {error}")
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.db = Database(Path(":memory:"))
+        self.addCleanup(self.db.close)
+        self.db.add_department(Department("COE", "Engineering"))
+        self.db.add_program("COE", "BS CpE")
+        self.db.replace_curriculum(
+            "BS CpE", "COE",
+            {"1st Year": {"1st Sem": ["CS101 - Programming 1"], "2nd Sem": []}},
+        )
+        self.db.add_professor(Professor("Jane Doe", "COE", [("COE", "BS CpE")]))
+        with patch("scheduling_system.ui.Database", return_value=self.db):
+            self.app = SchedulingApp(self.root)
+
+    def test_professor_single_click_no_longer_opens_edit_dialog(self) -> None:
+        self.app.selected_department.set("COE")
+        self.app._refresh_board()
+        self.assertEqual(self.app.professor_list.bind("<<ListboxSelect>>"), "")
+        self.assertTrue(self.app.professor_list.bind("<Double-Button-1>"))
+        self.app.professor_list.selection_set(0)
+        with patch.object(SchedulingApp, "open_edit_professor_dialog") as open_dialog:
+            self.app.professor_list.event_generate("<<ListboxSelect>>")
+            self.root.update()
+        open_dialog.assert_not_called()
+
+    def _modal_buttons(self) -> list[ttk.Button]:
+        dialog = next(child for child in self.root.winfo_children() if isinstance(child, tk.Toplevel))
+        frame = dialog.winfo_children()[0]
+        return [child for child in frame.winfo_children() if isinstance(child, ttk.Button)]
+
+    def test_single_program_click_shows_options_modal(self) -> None:
+        self.app.selected_department.set("COE")
+        self.app._refresh_board()
+        self.app.program_list.selection_set(0)
+        self.app._program_changed()
+        self.assertEqual(self.app.selected_program.get(), "BS CpE")
+        self.assertEqual(
+            self.app.curriculum["1st Year"]["1st Sem"], ["CS101 - Programming 1"],
+        )
+        buttons = self._modal_buttons()
+        self.assertEqual([b.cget("text") for b in buttons], ["Edit", "Delete", "Cancel"])
+
+    def test_professor_options_modal_offers_edit_and_delete(self) -> None:
+        self.app.selected_department.set("COE")
+        self.app._refresh_board()
+        self.app.professor_list.selection_set(0)
+        with patch("scheduling_system.ui.messagebox.askyesno", return_value=False) as ask, \
+             patch.object(SchedulingApp, "open_edit_professor_dialog") as open_edit:
+            self.app._open_professor_options()
+            buttons = self._modal_buttons()
+            self.assertEqual([b.cget("text") for b in buttons], ["Edit", "Delete", "Cancel"])
+            buttons[1].invoke()
+            self.assertIn("Jane Doe", ask.call_args[0][1])
+            self.assertEqual([p.name for p in self.db.load_professors()], ["Jane Doe"])
+            self.app._open_professor_options()
+            buttons = self._modal_buttons()
+            buttons[0].invoke()
+            self.assertEqual(open_edit.call_count, 1)
+            self.assertEqual(open_edit.call_args[0][0].name, "Jane Doe")
+
+    def test_program_options_modal_offers_edit_and_delete(self) -> None:
+        self.app.selected_department.set("COE")
+        self.app._refresh_board()
+        self.app.program_list.selection_set(0)
+        with patch("scheduling_system.ui.messagebox.askyesno", return_value=False) as ask, \
+             patch("scheduling_system.ui.simpledialog.askstring", return_value=None):
+            self.app._open_program_options()
+            buttons = self._modal_buttons()
+            self.assertEqual([b.cget("text") for b in buttons], ["Edit", "Delete", "Cancel"])
+            buttons[1].invoke()
+            self.assertIn("BS CpE (COE)", ask.call_args[0][1])
+            self.assertEqual(self.db.load_departments()[0].programs, ["BS CpE"])
+            self.app._open_program_options()
+            buttons = self._modal_buttons()
+            buttons[0].invoke()
+            self.assertEqual(self.db.load_departments()[0].programs, ["BS CpE"])
+
+    def test_renamed_non_excel_file_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "not-excel.xlsx"
+            path.write_text("This is definitely not a zip archive")
+            with self.assertRaises(ValueError) as raised:
+                read_xlsx(path)
+        self.assertIn("not a valid Excel workbook", str(raised.exception))
+
+    def test_corrupt_shared_string_reference_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "corrupt.xlsx"
+            write_workbook(
+                path,
+                sheet_xml([HEADERS_ROW, shared_cell("A2", 99)]),
+                shared=["HEADER"],
+            )
+            with self.assertRaises(ValueError) as raised:
+                read_xlsx(path)
+        self.assertIn("invalid shared string reference", str(raised.exception))
+
+    def test_stale_subject_edit_raises_and_changes_nothing(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            self.db.update_subject(
+                "BS CpE", "COE", "1st Year", "1st Sem",
+                "CS101 - Wrong Name", "CS999", "Renamed",
+            )
+        self.assertIn("Subject not found", str(raised.exception))
+        curriculum = self.db.load_curriculum("BS CpE", "COE")
+        self.assertEqual(
+            curriculum["1st Year"]["1st Sem"], ["CS101 - Programming 1"],
+        )
 
 
 if __name__ == "__main__":
