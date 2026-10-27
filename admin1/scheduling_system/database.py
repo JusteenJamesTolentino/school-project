@@ -222,10 +222,6 @@ class Database:
                 "UPDATE schedules SET program = ? WHERE program = ? AND department = ?",
                 (new_name, old_name, department_code),
             )
-            self.connection.execute(
-                "UPDATE schedules SET program = ? WHERE program = ? AND department = ?",
-                (new_name, old_name, department_code),
-            )
 
     def delete_program(self, department_code: str, program: str) -> None:
         with self.connection:
@@ -234,10 +230,6 @@ class Database:
                 DELETE FROM programs
                 WHERE name = ? AND department_id = (SELECT id FROM departments WHERE code = ?)
                 """,
-                (program, department_code),
-            )
-            self.connection.execute(
-                "DELETE FROM schedules WHERE program = ? AND department = ?",
                 (program, department_code),
             )
             self.connection.execute(
@@ -281,7 +273,13 @@ class Database:
 
     def update_professor(self, professor_id: int, professor: Professor) -> None:
         row = self.connection.execute(
-            "SELECT id, name FROM professors WHERE id = ?", (professor_id,)
+            """
+            SELECT p.id, p.name, d.code AS department
+            FROM professors p
+            JOIN departments d ON d.id = p.department_id
+            WHERE p.id = ?
+            """,
+            (professor_id,),
         ).fetchone()
         if row is None:
             raise ValueError("Professor does not exist")
@@ -301,18 +299,31 @@ class Database:
             )
             if old_name != professor.name:
                 self.connection.execute(
-                    "UPDATE schedules SET professor = ? WHERE professor = ?",
-                    (professor.name, old_name),
+                    """
+                    UPDATE schedules SET professor = ?
+                    WHERE professor = ? AND department = ?
+                    """,
+                    (professor.name, old_name, row["department"]),
                 )
 
     def delete_professor(self, professor_id: int) -> None:
         row = self.connection.execute(
-            "SELECT name FROM professors WHERE id = ?", (professor_id,)
+            """
+            SELECT p.name, d.code AS department
+            FROM professors p
+            JOIN departments d ON d.id = p.department_id
+            WHERE p.id = ?
+            """,
+            (professor_id,),
         ).fetchone()
         with self.connection:
             if row:
                 self.connection.execute(
-                    "DELETE FROM schedules WHERE professor = ?", (row["name"],)
+                    """
+                    DELETE FROM schedules
+                    WHERE professor = ? AND department = ?
+                    """,
+                    (row["name"], row["department"]),
                 )
             self.connection.execute(
                 "DELETE FROM professors WHERE id = ?", (professor_id,)
@@ -528,6 +539,7 @@ class Database:
                 and self.schedules_conflict(existing, schedule)]
 
     def update_schedule(self, schedule: Schedule) -> None:
+        self._validate_schedule(schedule)
         with self.connection:
             self.connection.execute(
                 """
@@ -549,16 +561,19 @@ class Database:
             ).fetchone()[0] == 0:
                 raise ValueError("Schedule does not exist")
 
-    def add_schedule(self, schedule: Schedule) -> None:
-        if schedule.day not in self.DAY_ORDER:
+    @classmethod
+    def _validate_schedule(cls, schedule: Schedule) -> None:
+        if schedule.day not in cls.DAY_ORDER:
             raise ValueError("Invalid schedule day")
         if schedule.subject_type not in {"Lecture", "Laboratory"}:
             raise ValueError("Invalid subject type")
         if schedule.start_minutes < 0 or schedule.end_minutes <= schedule.start_minutes:
             raise ValueError("Invalid schedule time range")
-        required = (schedule.program, schedule.subject, schedule.professor)
-        if not all(value.strip() for value in required):
+        if not all(value.strip() for value in (schedule.program, schedule.subject, schedule.professor)):
             raise ValueError("Schedule fields cannot be empty")
+
+    def add_schedule(self, schedule: Schedule) -> None:
+        self._validate_schedule(schedule)
         with self.connection:
             cursor = self.connection.execute(
                 """

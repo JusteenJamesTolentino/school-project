@@ -1,5 +1,30 @@
 # Update log
 
+## 2026-10-27 (Code Audit)
+
+### Findings
+
+| Severity | Finding | Status |
+|---|---|---|
+| HIGH | Professor rename/delete operations matched schedules by professor name globally, so same-named professors in another department could be modified or deleted. | Fixed |
+| HIGH | Schedule edits bypassed the validation applied to new schedules, allowing invalid days, types, time ranges, or empty required fields. | Fixed |
+| MEDIUM | Program rename/delete each executed the same schedule mutation twice. | Fixed |
+| LOW | An incorrect Admin 1 frame annotation and an unnecessary Admin 2 import suppression hid static-analysis warnings. | Fixed |
+| LOW | `WindowControls._close()` raises `NotImplementedError` as an intentional abstract contract. | Accepted |
+
+### Fixed
+
+- Scoped professor schedule updates and deletions to the professor's department.
+- Reused one schedule validator for both inserts and updates.
+- Removed duplicate program schedule mutations.
+- Removed unnecessary `# type: ignore` suppressions.
+
+### Verified for distribution
+
+- Admin 1: 42 tests passed, 1 display-dependent test skipped.
+- Admin 2: 53 tests passed.
+- All Python sources compiled successfully.
+
 ## 2026-10-26 (Antigravity Bug Fixes & Improvements)
 
 ### Fixed

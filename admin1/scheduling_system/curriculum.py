@@ -60,7 +60,7 @@ def read_xlsx(path: Path) -> dict[str, dict[str, list[str]]]:
                     )
                 else:
                     value_node = cell.find("m:v", ns)
-                    value = value_node.text if value_node is not None else ""
+                    value = (value_node.text or "") if value_node is not None else ""
                     if cell.attrib.get("t") == "s" and value:
                         try:
                             value = shared_strings[int(value)]

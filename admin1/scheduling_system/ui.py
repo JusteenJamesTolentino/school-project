@@ -320,7 +320,7 @@ class SchedulingApp:
                  foreground=self.COLORS["primary_dark"], font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(side="left", fill="x", expand=True, padx=(11, 4))
         if control_factory is not None:
-            control = control_factory(title_row)
+            control = control_factory(title_row) # type: ignore
             control.pack(side="right", padx=(6, 0))
         separator = ttk.Separator(frame, orient="horizontal")
         separator.pack(fill="x")
@@ -1298,6 +1298,8 @@ class SchedulingApp:
         programs = [key for key, value in checks.items() if value.get()]
         if not name or not programs:
             self.show_notice("Enter a professor name and select at least one program")
+            return
+        if professor.id is None:
             return
         updated = Professor(name, professor.department, programs)
         try:

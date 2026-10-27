@@ -147,3 +147,9 @@ release/antigravity-version/
 ```
 
 Both executables operate as self-contained Windows desktop applications.
+
+## Change Log
+
+For the complete history of bug fixes, code-audit findings, data-integrity
+changes, test results, and distribution builds, see the
+[CHANGELOG.md](CHANGELOG.md).

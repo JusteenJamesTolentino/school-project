@@ -7,6 +7,13 @@ from tkinter import ttk
 
 
 class WindowControls:
+    root: tk.Tk
+    _resume_fullscreen: bool
+    _restore_after_id: str | None
+
+    def _close(self) -> None:
+        raise NotImplementedError
+
     def _configure_window(self, title: str) -> None:
         self.root.title(title)
         self.root.geometry("1280x760")
