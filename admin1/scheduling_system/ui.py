@@ -65,6 +65,13 @@ class SchedulingApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.database = Database()
+        configured = self.database.get_setting("database_path")
+        if configured:
+            configured_path = Path(configured)
+            if configured_path != self.database.path and configured_path.exists():
+                self.database.close()
+                self.database = Database(configured_path)
+        self.database.set_setting("database_path", str(self.database.path))
         self.theme_name = self.database.get_setting("theme", "light")
         if self.theme_name not in self.THEMES:
             self.theme_name = "light"
@@ -73,13 +80,12 @@ class SchedulingApp:
         self.root.title("Admin 1 - Scheduling Workspace")
         self.root.geometry("1280x760")
         self.root.minsize(900, 600)
-        try:
-            self.root.state("zoomed")
-        except tk.TclError:
-            pass
+        self.root.attributes("-fullscreen", True)
+        self.root.bind("<F11>", self._toggle_fullscreen)
         self.root.configure(bg=self.COLORS["background"])
 
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self.root.bind("<Destroy>", self._cancel_notice_callback, add="+")
         self.departments = self.database.load_departments()
         self.professors = self.database.load_professors()
         self.selected_department = tk.StringVar()
@@ -102,9 +108,20 @@ class SchedulingApp:
         self._build_interface()
         self._refresh_board()
 
+    def _toggle_fullscreen(self, _event: tk.Event | None = None) -> None:
+        self.root.attributes("-fullscreen", not self.root.attributes("-fullscreen"))
+
     def _close(self) -> None:
+        if self.notice_after_id:
+            self.root.after_cancel(self.notice_after_id)
+            self.notice_after_id = None
         self.database.close()
         self.root.destroy()
+
+    def _cancel_notice_callback(self, event: tk.Event) -> None:
+        if event.widget is self.root and self.notice_after_id:
+            self.root.after_cancel(self.notice_after_id)
+            self.notice_after_id = None
 
     def _configure_styles(self) -> None:
         style = ttk.Style()
@@ -167,14 +184,15 @@ class SchedulingApp:
         dialog.title("Settings")
         dialog.transient(self.root)
         dialog.grab_set()
-        dialog.geometry("440x240")
+        dialog.geometry("460x340")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=22)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Settings", font=("Segoe UI", 16, "bold")).pack(anchor="w")
         ttk.Label(
             frame,
             text="Theme changes apply immediately and are remembered next time you open the app.",
-            style="Muted.TLabel", wraplength=360,
+            style="Muted.TLabel", wraplength=380,
         ).pack(anchor="w", pady=(3, 16))
         ttk.Label(frame, text="Theme", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         theme = tk.StringVar(value=self.theme_name)
@@ -183,11 +201,60 @@ class SchedulingApp:
                 frame, text=label, value=value, variable=theme,
                 command=lambda: self._apply_theme(theme.get()),
             ).pack(anchor="w", pady=(4, 0))
+        ttk.Label(frame, text="Database", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(18, 4))
+        self.database_path_label = ttk.Label(
+            frame, text=str(self.database.path), style="Muted.TLabel", wraplength=380,
+        )
+        self.database_path_label.pack(anchor="w")
+        ttk.Button(
+            frame, text="Change database location...",
+            command=self._choose_database_location,
+        ).pack(anchor="w", pady=(6, 0))
         ttk.Button(frame, text="Close", command=dialog.destroy).pack(anchor="e", pady=(18, 0))
+
+    def _choose_database_location(self) -> None:
+        directory = filedialog.askdirectory(
+            title="Choose or create a folder for the database",
+        )
+        if not directory:
+            return
+        self._move_database(Path(directory))
+
+    def _move_database(self, directory: Path) -> None:
+        target = directory / "scheduling.db"
+        current = self.database.path
+        if target == current:
+            self.show_notice("The database is already stored in that folder")
+            return
+        created = not target.exists()
+        try:
+            self.database.set_setting("database_path", str(target))
+            self.database.close()
+            if not directory.exists():
+                directory.mkdir(parents=True)
+            moved = Database(target)
+        except (OSError, sqlite3.Error) as error:
+            self.show_notice(f"Could not create the database: {error}")
+            self.database = Database(current)
+            self.database.set_setting("database_path", str(current))
+            return
+        self.database = moved
+        self.database.set_setting("database_path", str(target))
+        self.departments = self.database.load_departments()
+        self.professors = self.database.load_professors()
+        self.selected_department.set("")
+        self.selected_program.set("")
+        self._apply_theme(self.database.get_setting("theme") or "light")
+        if hasattr(self, "database_path_label") and self.database_path_label.winfo_exists():
+            self.database_path_label.configure(text=str(target))
+        if created:
+            self.show_notice(f"New database created in {directory}")
+        else:
+            self.show_notice(f"Using existing database in {directory}")
 
     def _build_interface(self) -> None:
         outer = ttk.Frame(self.root)
-        outer.pack(fill="both", expand=True, padx=28, pady=24)
+        outer.pack(fill="both", expand=True, padx=12, pady=8)
 
         action_bar = ttk.Frame(outer, style="Card.TFrame", padding=(16, 10))
         action_bar.pack(fill="x", pady=(0, 12))
@@ -202,6 +269,13 @@ class SchedulingApp:
                    command=self.open_room_dialog).pack(side="left", padx=3)
         ttk.Button(action_bar, text="+  Subject", style="Action.TButton",
                    command=self.open_subject_dialog).pack(side="left", padx=3)
+
+        window_controls = ttk.Frame(action_bar, style="Card.TFrame")
+        window_controls.pack(side="right", padx=(0, 2))
+        ttk.Button(window_controls, text="—", width=3,
+                   command=self.root.iconify).pack(side="left", padx=1)
+        ttk.Button(window_controls, text="✕", width=3, style="Danger.TButton",
+                   command=self._close).pack(side="left", padx=1)
         ttk.Button(action_bar, text="IMPORT SUBJECT", style="Primary.TButton",
                    command=self.import_file).pack(side="right", padx=3)
         ttk.Button(action_bar, text="⚙  Settings", style="Action.TButton",
@@ -217,10 +291,13 @@ class SchedulingApp:
         self.board_holder.pack(fill="both", expand=True)
         self.board_canvas = tk.Canvas(self.board_holder, background=self.COLORS["surface"],
                                       highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self.board_holder, orient="horizontal", command=self.board_canvas.xview)
-        self.board_canvas.configure(xscrollcommand=scrollbar.set)
-        self.board_canvas.pack(fill="both", expand=True)
-        scrollbar.pack(fill="x")
+        self.board_hscroll = ttk.Scrollbar(self.board_holder, orient="horizontal",
+                                          command=self.board_canvas.xview)
+        self.board_canvas.configure(xscrollcommand=self.board_hscroll.set)
+        self.board_holder.rowconfigure(0, weight=1)
+        self.board_holder.columnconfigure(0, weight=1)
+        self.board_canvas.grid(row=0, column=0, sticky="nsew")
+        self.board_hscroll.grid(row=1, column=0, sticky="ew")
         self.board = ttk.Frame(self.board_canvas, style="Panel.TFrame")
         self.board_window = self.board_canvas.create_window((0, 0), window=self.board, anchor="nw")
         self.board.bind("<Configure>", lambda _event: self.board_canvas.configure(
@@ -317,7 +394,7 @@ class SchedulingApp:
             highlightcolor=self.COLORS["highlight"], font=("Segoe UI", 10),
         )
         day_list.pack(fill="both", expand=True)
-        for day in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"):
+        for day in Database.DAY_ORDER:
             day_list.insert("end", day)
         if self.selected_day.get():
             day_list.selection_set(day_list.get(0, "end").index(self.selected_day.get()))
@@ -463,6 +540,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("500x300")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=22)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Edit subject", font=("Segoe UI", 16, "bold")).pack(anchor="w")
@@ -598,6 +676,12 @@ class SchedulingApp:
         self.notice_label.pack_forget()
         self.notice_after_id = None
 
+    def _center_dialog(self, dialog: tk.Toplevel) -> None:
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
     def import_file(self) -> None:
         program_options = [
             f"{department.code} — {program}"
@@ -605,13 +689,14 @@ class SchedulingApp:
             for program in department.programs
         ]
         if not program_options:
-            self.show_notice("Create a department and program before importing a curriculum")
+            self._open_first_curriculum_import()
             return
         dialog = tk.Toplevel(self.root)
         dialog.title("Import subject curriculum")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("560x300")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=22)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Import subject curriculum",
@@ -636,6 +721,49 @@ class SchedulingApp:
             buttons, text="Choose XLSX", style="Primary.TButton",
             command=lambda: self._choose_curriculum_file(program, dialog),
         ).pack(side="right")
+
+    def _open_first_curriculum_import(self) -> None:
+        """Collect the owner details needed to import into a blank database."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Import first curriculum")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("560x460")
+        self._center_dialog(dialog)
+        frame = ttk.Frame(dialog, padding=22)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Import first curriculum",
+                  font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=("This database has no programs yet. Enter the department and "
+                  "program that own this Excel curriculum."),
+            style="Muted.TLabel", wraplength=490,
+        ).pack(anchor="w", pady=(3, 18))
+        fields = (
+            ("Department code", self.selected_department.get().strip().upper()),
+            ("Department name", ""),
+            ("Program name", self.selected_program.get().strip()),
+        )
+        entries: list[ttk.Entry] = []
+        for label, value in fields:
+            ttk.Label(frame, text=label, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+            entry = ttk.Entry(frame)
+            entry.insert(0, value)
+            entry.pack(fill="x", pady=(4, 12))
+            entries.append(entry)
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(
+            side="right", padx=(8, 0)
+        )
+        ttk.Button(
+            buttons, text="Choose XLSX", style="Primary.TButton",
+            command=lambda: self._choose_first_curriculum_file(
+                entries[0], entries[1], entries[2], dialog,
+            ),
+        ).pack(side="right")
+        entries[0].focus_set()
 
     def _choose_curriculum_file(self, program: tk.StringVar, dialog: tk.Toplevel) -> None:
         path = filedialog.askopenfilename(
@@ -664,12 +792,71 @@ class SchedulingApp:
         self._refresh_board()
         self.show_notice(f"Imported {total} subjects from {Path(path).name}")
 
+    def _choose_first_curriculum_file(
+        self,
+        department_code_entry: ttk.Entry,
+        department_name_entry: ttk.Entry,
+        program_name_entry: ttk.Entry,
+        dialog: tk.Toplevel,
+    ) -> None:
+        department_code = department_code_entry.get().strip().upper()
+        department_name = department_name_entry.get().strip()
+        program_name = program_name_entry.get().strip()
+        existing_department = next(
+            (item for item in self.departments if item.code == department_code), None
+        )
+        if not department_code or not program_name:
+            self.show_notice("Enter a department code and program name")
+            return
+        if existing_department is None and not department_name:
+            self.show_notice("Enter the department name for the new department")
+            return
+        if existing_department and program_name in existing_department.programs:
+            self.show_notice("That program already exists in this department")
+            return
+
+        path = filedialog.askopenfilename(
+            parent=dialog,
+            filetypes=[("Excel workbook", "*.xlsx"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        if Path(path).suffix.lower() != ".xlsx":
+            self.show_notice("Please select an XLSX curriculum workbook")
+            return
+        try:
+            curriculum = read_xlsx(Path(path))
+            if existing_department is None:
+                self.database.add_department(Department(department_code, department_name))
+            self.database.add_program(department_code, program_name)
+            total = self.database.replace_curriculum(
+                program_name, department_code, curriculum,
+            )
+        except (OSError, KeyError, ValueError, TypeError, sqlite3.Error,
+                ElementTree.ParseError) as error:
+            self.show_notice(f"Could not import workbook: {error}")
+            return
+        if total == 0:
+            self.show_notice("No curriculum subjects were found in that workbook")
+            return
+        dialog.destroy()
+        self.departments = self.database.load_departments()
+        self.professors = self.database.load_professors()
+        self.selected_department.set(department_code)
+        self.selected_program.set(program_name)
+        self.curriculum = curriculum
+        self._refresh_board()
+        self.show_notice(
+            f"Created {department_code} / {program_name} and imported {total} subjects"
+        )
+
     def open_room_dialog(self) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("Add room")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("500x430")
+        self._center_dialog(dialog)
         dialog.minsize(500, 430)
         frame = ttk.Frame(dialog, padding=(28, 24))
         frame.pack(fill="both", expand=True)
@@ -745,6 +932,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("560x470")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=22)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Add subject", font=("Segoe UI", 16, "bold")).pack(anchor="w")
@@ -816,6 +1004,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("520x300")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Add department", font=("Segoe UI", 16, "bold")).pack(anchor="w")
@@ -839,6 +1028,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("500x300")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=22)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Add program", font=("Segoe UI", 16, "bold")).pack(anchor="w")
@@ -914,6 +1104,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("560x560")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Add professor", font=("Segoe UI", 16, "bold")).pack(anchor="w")
@@ -994,6 +1185,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("320x250")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=24)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text=professor.name, font=("Segoe UI", 14, "bold")).pack(anchor="w")
@@ -1022,6 +1214,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("320x250")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=24)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text=program, font=("Segoe UI", 14, "bold")).pack(anchor="w")
@@ -1045,6 +1238,7 @@ class SchedulingApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("500x500")
+        self._center_dialog(dialog)
         frame = ttk.Frame(dialog, padding=22)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Edit professor", font=("Segoe UI", 16, "bold")).pack(anchor="w")

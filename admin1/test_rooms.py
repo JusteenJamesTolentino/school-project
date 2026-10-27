@@ -63,11 +63,47 @@ class RoomUITests(unittest.TestCase):
                        if isinstance(child, tk.Listbox))
         return combo, listing
 
+    def test_window_starts_fullscreen_with_window_controls(self) -> None:
+        self.assertTrue(self.app.root.attributes("-fullscreen"))
+        texts = [w.cget("text") for w in self._all_buttons()]
+        self.assertIn("—", texts)
+        self.assertIn("✕", texts)
+        self.assertTrue(self.app.root.bind("<F11>"))
+        self.app._toggle_fullscreen()
+        self.assertFalse(self.app.root.attributes("-fullscreen"))
+        self.app._toggle_fullscreen()
+        self.assertTrue(self.app.root.attributes("-fullscreen"))
+
+    def _all_buttons(self) -> list[ttk.Button]:
+        def descend(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Button):
+                    yield child
+                yield from descend(child)
+        return list(descend(self.app.root))
+
+    def test_board_horizontal_scrollbar_stays_visible_and_moves_view(self) -> None:
+        self.root.attributes("-fullscreen", False)
+        self.root.state("normal")
+        self.root.geometry("1000x760")
+        self.root.deiconify()
+        self.root.update()
+        scrollbar = self.app.board_hscroll
+        self.assertEqual(str(scrollbar.cget("orient")), "horizontal")
+        self.assertEqual(scrollbar.grid_info()["row"], 1)
+        self.assertTrue(scrollbar.winfo_ismapped())
+        self.assertLess(self.app.board_canvas.xview()[1], 1.0)
+        self.root.tk.call(scrollbar.cget("command"), "moveto", 1.0)
+        self.root.update_idletasks()
+        self.assertGreater(self.app.board_canvas.xview()[0], 0.0)
+        self.assertAlmostEqual(self.app.board_canvas.xview()[1], 1.0, places=2)
+        self.assertEqual(scrollbar.get(), self.app.board_canvas.xview())
+        self.root.geometry("900x600")
+        self.root.update()
+        self.assertTrue(scrollbar.winfo_ismapped())
+
     def test_window_starts_maximized(self) -> None:
-        try:
-            self.assertEqual(self.app.root.state(), "zoomed")
-        except tk.TclError:
-            self.skipTest("zoomed window state not supported on this platform")
+        self.skipTest("superseded by fullscreen startup test")
 
     def test_empty_board_has_no_hardcoded_locations(self) -> None:
         combo, listing = self.room_widgets()

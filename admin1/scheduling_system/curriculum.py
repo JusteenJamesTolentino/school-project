@@ -41,7 +41,10 @@ def read_xlsx(path: Path) -> dict[str, dict[str, list[str]]]:
         if sheet is None:
             raise ValueError("The workbook has no worksheets")
         relationship_id = sheet.attrib[f"{{{relationships_namespace}}}id"]
-        worksheet_path = relationship_map[relationship_id].lstrip("/")
+        try:
+            worksheet_path = relationship_map[relationship_id].lstrip("/")
+        except KeyError as error:
+            raise ValueError("The workbook has an invalid worksheet relationship") from error
         if not worksheet_path.startswith("xl/"):
             worksheet_path = "xl/" + worksheet_path
         worksheet = ElementTree.fromstring(workbook.read(normpath(worksheet_path)))

@@ -109,6 +109,19 @@ class ThemeUITests(unittest.TestCase):
         self.assertEqual(self.app.theme_name, "light")
         self.assertIsNone(self.db.get_setting("theme"))
 
+    def test_dialogs_center_over_main_window(self) -> None:
+        self.root.geometry("800x600")
+        self.root.update_idletasks()
+        dialog = tk.Toplevel(self.root)
+        self.addCleanup(dialog.destroy)
+        dialog.geometry("200x100")
+        self.app._center_dialog(dialog)
+        dialog.update_idletasks()
+        expected_x = self.root.winfo_rootx() + (self.root.winfo_width() - 200) // 2
+        expected_y = self.root.winfo_rooty() + (self.root.winfo_height() - 100) // 2
+        self.assertEqual(dialog.winfo_x(), max(expected_x, 0))
+        self.assertEqual(dialog.winfo_y(), max(expected_y, 0))
+
     def test_settings_dialog_contains_light_and_dark_choices(self) -> None:
         self.app.open_settings_dialog()
         dialog = next(child for child in self.root.winfo_children() if isinstance(child, tk.Toplevel))

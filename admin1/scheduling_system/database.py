@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from scheduling_system.models import Department, Professor
+from scheduling_system.models import Department, Professor, Schedule
 
 
 class Database:
@@ -76,6 +76,22 @@ class Database:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                department TEXT NOT NULL,
+                program TEXT NOT NULL,
+                year TEXT NOT NULL DEFAULT '',
+                semester TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL,
+                subject_type TEXT NOT NULL,
+                professor TEXT NOT NULL,
+                room TEXT NOT NULL DEFAULT '',
+                room_building TEXT NOT NULL DEFAULT '',
+                room_floor TEXT NOT NULL DEFAULT '',
+                day TEXT NOT NULL,
+                start_minutes INTEGER NOT NULL,
+                end_minutes INTEGER NOT NULL
+            );
             """
         )
         columns = {
@@ -86,6 +102,18 @@ class Database:
             self.connection.execute("ALTER TABLE curricula ADD COLUMN subject_code TEXT")
         if "subject_name" not in columns:
             self.connection.execute("ALTER TABLE curricula ADD COLUMN subject_name TEXT")
+        schedule_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(schedules)").fetchall()
+        }
+        if "room_building" not in schedule_columns:
+            self.connection.execute(
+                "ALTER TABLE schedules ADD COLUMN room_building TEXT NOT NULL DEFAULT ''"
+            )
+        if "room_floor" not in schedule_columns:
+            self.connection.execute(
+                "ALTER TABLE schedules ADD COLUMN room_floor TEXT NOT NULL DEFAULT ''"
+            )
         rows = self.connection.execute(
             "SELECT id, subject FROM curricula WHERE subject_code IS NULL"
         ).fetchall()
@@ -102,7 +130,7 @@ class Database:
         if " - " in subject:
             code, name = subject.split(" - ", 1)
             return code, name
-        return subject, subject
+        return "", subject
 
     @staticmethod
     def _format_subject(code: str, name: str) -> str:
@@ -190,6 +218,14 @@ class Database:
                 """,
                 (new_name, old_name, department_code),
             )
+            self.connection.execute(
+                "UPDATE schedules SET program = ? WHERE program = ? AND department = ?",
+                (new_name, old_name, department_code),
+            )
+            self.connection.execute(
+                "UPDATE schedules SET program = ? WHERE program = ? AND department = ?",
+                (new_name, old_name, department_code),
+            )
 
     def delete_program(self, department_code: str, program: str) -> None:
         with self.connection:
@@ -198,6 +234,14 @@ class Database:
                 DELETE FROM programs
                 WHERE name = ? AND department_id = (SELECT id FROM departments WHERE code = ?)
                 """,
+                (program, department_code),
+            )
+            self.connection.execute(
+                "DELETE FROM schedules WHERE program = ? AND department = ?",
+                (program, department_code),
+            )
+            self.connection.execute(
+                "DELETE FROM schedules WHERE program = ? AND department = ?",
                 (program, department_code),
             )
 
@@ -237,10 +281,11 @@ class Database:
 
     def update_professor(self, professor_id: int, professor: Professor) -> None:
         row = self.connection.execute(
-            "SELECT id FROM professors WHERE id = ?", (professor_id,)
+            "SELECT id, name FROM professors WHERE id = ?", (professor_id,)
         ).fetchone()
         if row is None:
             raise ValueError("Professor does not exist")
+        old_name = row["name"]
         program_ids = self._resolve_program_ids(professor.programs)
         with self.connection:
             self.connection.execute(
@@ -254,9 +299,21 @@ class Database:
                 "INSERT INTO professor_programs (professor_id, program_id) VALUES (?, ?)",
                 [(professor_id, program_id) for program_id in program_ids],
             )
+            if old_name != professor.name:
+                self.connection.execute(
+                    "UPDATE schedules SET professor = ? WHERE professor = ?",
+                    (professor.name, old_name),
+                )
 
     def delete_professor(self, professor_id: int) -> None:
+        row = self.connection.execute(
+            "SELECT name FROM professors WHERE id = ?", (professor_id,)
+        ).fetchone()
         with self.connection:
+            if row:
+                self.connection.execute(
+                    "DELETE FROM schedules WHERE professor = ?", (row["name"],)
+                )
             self.connection.execute(
                 "DELETE FROM professors WHERE id = ?", (professor_id,)
             )
@@ -344,6 +401,9 @@ class Database:
             )
 
     def add_room(self, building: str, floor: str, room: str) -> None:
+        building, floor, room = (value.strip() for value in (building, floor, room))
+        if not building or not floor or not room:
+            raise ValueError("Building, floor, and room are required")
         with self.connection:
             self.connection.execute(
                 "INSERT INTO rooms (building, floor, room) VALUES (?, ?, ?)",
@@ -435,5 +495,138 @@ class Database:
                     "Reopen the subject and try again."
                 )
 
+    DAY_ORDER = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+    @staticmethod
+    def schedules_conflict(first: Schedule, second: Schedule) -> bool:
+        """True when two entries overlap in time and share a professor, section, or room."""
+        if first.day != second.day:
+            return False
+        overlaps = (first.start_minutes < second.end_minutes
+                    and second.start_minutes < first.end_minutes)
+        if not overlaps:
+            return False
+        same_professor = first.professor.strip().lower() == second.professor.strip().lower()
+        same_section = (
+            first.department, first.program, first.year, first.semester
+        ) == (second.department, second.program, second.year, second.semester)
+        same_room = False
+        if bool(first.room.strip()) and first.room.strip().lower() == second.room.strip().lower():
+            b1 = first.room_building.strip().lower()
+            b2 = second.room_building.strip().lower()
+            f1 = first.room_floor.strip().lower()
+            f2 = second.room_floor.strip().lower()
+            building_match = not b1 or not b2 or b1 == b2
+            floor_match = not f1 or not f2 or f1 == f2
+            same_room = building_match and floor_match
+        return same_professor or same_section or same_room
+
+    def conflicting_schedules(self, schedule: Schedule,
+                              exclude_id: int | None = None) -> list[Schedule]:
+        return [existing for existing in self.load_schedules()
+                if existing.id != exclude_id
+                and self.schedules_conflict(existing, schedule)]
+
+    def update_schedule(self, schedule: Schedule) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE schedules
+                SET department = ?, program = ?, year = ?, semester = ?,
+                    subject = ?, subject_type = ?, professor = ?, room = ?,
+                    room_building = ?, room_floor = ?,
+                    day = ?, start_minutes = ?, end_minutes = ?
+                WHERE id = ?
+                """,
+                (schedule.department, schedule.program, schedule.year, schedule.semester,
+                 schedule.subject, schedule.subject_type, schedule.professor,
+                 schedule.room, schedule.room_building, schedule.room_floor,
+                 schedule.day, schedule.start_minutes,
+                 schedule.end_minutes, schedule.id),
+            )
+            if self.connection.execute(
+                "SELECT changes()"
+            ).fetchone()[0] == 0:
+                raise ValueError("Schedule does not exist")
+
+    def add_schedule(self, schedule: Schedule) -> None:
+        if schedule.day not in self.DAY_ORDER:
+            raise ValueError("Invalid schedule day")
+        if schedule.subject_type not in {"Lecture", "Laboratory"}:
+            raise ValueError("Invalid subject type")
+        if schedule.start_minutes < 0 or schedule.end_minutes <= schedule.start_minutes:
+            raise ValueError("Invalid schedule time range")
+        required = (schedule.program, schedule.subject, schedule.professor)
+        if not all(value.strip() for value in required):
+            raise ValueError("Schedule fields cannot be empty")
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                INSERT INTO schedules
+                    (department, program, year, semester, subject, subject_type,
+                     professor, room, room_building, room_floor, day, start_minutes, end_minutes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (schedule.department, schedule.program, schedule.year, schedule.semester,
+                 schedule.subject, schedule.subject_type, schedule.professor,
+                schedule.room, schedule.room_building, schedule.room_floor,
+                schedule.day, schedule.start_minutes, schedule.end_minutes),
+            )
+        schedule.id = cursor.lastrowid
+
+    def load_schedules(self) -> list[Schedule]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM schedules
+            ORDER BY CASE day
+                WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
+                WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6
+                ELSE 7 END,
+                start_minutes, professor, subject
+            """
+        ).fetchall()
+        return [
+            Schedule(
+                department=row["department"], program=row["program"],
+                subject=row["subject"], subject_type=row["subject_type"],
+                professor=row["professor"], day=row["day"],
+                start_minutes=row["start_minutes"], end_minutes=row["end_minutes"],
+                year=row["year"], semester=row["semester"], room=row["room"],
+                room_building=row["room_building"], room_floor=row["room_floor"],
+                id=row["id"],
+            )
+            for row in rows
+        ]
+
+    def load_all_rooms(self) -> list[str]:
+        rows = self.connection.execute(
+            "SELECT room FROM rooms ORDER BY building, floor, room"
+        ).fetchall()
+        return [row["room"] for row in rows]
+
+    def load_room_details(self) -> list[str]:
+        rows = self.connection.execute(
+            "SELECT building, floor, room FROM rooms ORDER BY building, floor, room"
+        ).fetchall()
+        return [f"{row['building']} / {row['floor']} / {row['room']}" for row in rows]
+
+    def delete_schedule(self, schedule_id: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM schedules WHERE id = ?", (schedule_id,)
+            )
+
+
+    def delete_department(self, code: str) -> None:
+        with self.connection:
+            self.connection.execute("DELETE FROM schedules WHERE department = ?", (code,))
+            self.connection.execute("DELETE FROM departments WHERE code = ?", (code,))
+
+    def delete_room(self, building: str, floor: str, room: str) -> None:
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM rooms WHERE building = ? AND floor = ? AND room = ?",
+                (building, floor, room),
+            )
     def close(self) -> None:
         self.connection.close()
