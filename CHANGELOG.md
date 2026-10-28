@@ -1,5 +1,26 @@
 # Update log
 
+## 2026-10-28 (Comprehensive Codebase Audit & Bug Tabulation)
+
+### Findings
+
+| Severity | Category | Description | Status |
+|---|---|---|---|
+| CRITICAL | Data Integrity | Room conflict detection false negatives with missing building/floor data. | Fixed (Wildcard matching implemented) |
+| CRITICAL | Data Integrity | Orphaned schedule records on program/department deletions. | Fixed (Cascading foreign keys & explicit deletion cascades) |
+| HIGH | Access Control | Professor updates/deletions matching names globally across departments. | Fixed (Department scoping enforced) |
+| HIGH | Input Validation | Schedule edits bypassing creation validation rules. | Fixed (Unified schedule validation) |
+| HIGH | UI / State | Stale room building/floor metadata retention in Admin 2. | Fixed (Form reset clearing logic) |
+| MEDIUM | Error Handling | Uncaught KeyError on malformed Excel worksheet relationships. | Fixed (`try/except KeyError` handling) |
+| MEDIUM | Feature Completeness | Missing Sunday support in day selector boards. | Fixed (`"Sunday"` added to `DAY_ORDER`) |
+| LOW | Code Quality | Redundant program schedule mutation queries. | Fixed (Duplicate queries removed) |
+
+### Verified for distribution
+
+- Admin 1: 42 tests passed successfully.
+- Admin 2: 53 tests passed successfully.
+- All Python sources compiled successfully.
+
 ## 2026-10-27 (Code Audit)
 
 ### Findings

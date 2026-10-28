@@ -14,8 +14,18 @@ from posixpath import normpath
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
+# 12-hour time, e.g. "7:30AM", "1:00 PM", "12am"
 _TIME_PATTERN = re.compile(
     r"^\s*(\d{1,2})(?::(\d{2}))?\s*([AP]\.?M\.?)\s*$", re.IGNORECASE
+)
+# 24-hour time, e.g. "14:30", "07:00"
+_TIME_24_PATTERN = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+# Two time tokens separated by any dash variant (hyphen, en-dash, em-dash, minus sign)
+_TIME_RANGE_RE = re.compile(
+    r"^\s*(\d{1,2}(?::\d{2})?\s*(?:[AP]\.?M\.?)?)"
+    r"\s*[-\u2013\u2014\u2212]\s*"
+    r"(\d{1,2}(?::\d{2})?\s*(?:[AP]\.?M\.?)?)\s*$",
+    re.IGNORECASE,
 )
 _DAY_NAMES = {
     "MONDAY": "Monday", "TUESDAY": "Tuesday", "WEDNESDAY": "Wednesday",
@@ -32,25 +42,39 @@ def normalize_header(header: str) -> str:
 
 
 def parse_time(text: str) -> int:
-    """Convert '7:00AM', '1:00 PM', '12am', ... to minutes since midnight."""
-    match = _TIME_PATTERN.match(text)
-    if not match:
-        raise ValueError(f"Cannot read time '{text.strip()}'")
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    suffix = match.group(3).replace(".", "").upper()
-    if hour < 1 or hour > 12 or minute > 59:
-        raise ValueError(f"Cannot read time '{text.strip()}'")
-    display_hour = hour % 12
-    return display_hour * 60 + minute + (720 if suffix == "PM" else 0)
+    """Convert '7:00AM', '1:00 PM', '12am', '14:30' to minutes since midnight."""
+    stripped = text.strip()
+    # Try 12-hour format first (7:30AM, 1:00 PM, 12am …)
+    match = _TIME_PATTERN.match(stripped)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        suffix = match.group(3).replace(".", "").upper()
+        if hour < 1 or hour > 12 or minute > 59:
+            raise ValueError(f"Cannot read time '{stripped}'")
+        display_hour = hour % 12
+        return display_hour * 60 + minute + (720 if suffix == "PM" else 0)
+    # Also accept 24-hour format without AM/PM, e.g. "14:30" or "07:00"
+    match = _TIME_24_PATTERN.match(stripped)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if hour > 23 or minute > 59:
+            raise ValueError(f"Cannot read time '{stripped}'")
+        return hour * 60 + minute
+    raise ValueError(f"Cannot read time '{stripped}'")
 
 
 def parse_time_range(text: str) -> tuple[int, int]:
-    """Convert '7:00AM-1:00PM' into (start, end) minutes since midnight."""
-    parts = text.split("-")
-    if len(parts) != 2:
+    """Convert '7:00AM-1:00PM' into (start, end) minutes since midnight.
+
+    Accepts hyphens, en-dashes (–), em-dashes (—) as the separator and
+    both 12-hour (AM/PM) and 24-hour time notation.
+    """
+    match = _TIME_RANGE_RE.match(text.strip())
+    if not match:
         raise ValueError(f"Cannot read time range '{text.strip()}'")
-    start, end = parse_time(parts[0]), parse_time(parts[1])
+    start = parse_time(match.group(1).strip())
+    end = parse_time(match.group(2).strip())
     if start >= end:
         raise ValueError(f"Time range '{text.strip()}' ends before it starts")
     return start, end

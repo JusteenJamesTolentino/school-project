@@ -587,7 +587,7 @@ class Database:
                 schedule.room, schedule.room_building, schedule.room_floor,
                 schedule.day, schedule.start_minutes, schedule.end_minutes),
             )
-        schedule.id = cursor.lastrowid
+            schedule.id = cursor.lastrowid
 
     def load_schedules(self) -> list[Schedule]:
         rows = self.connection.execute(
