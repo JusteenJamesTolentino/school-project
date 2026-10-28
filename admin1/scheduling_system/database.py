@@ -92,6 +92,13 @@ class Database:
                 start_minutes INTEGER NOT NULL,
                 end_minutes INTEGER NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_schedules_day_time ON schedules(day, start_minutes, end_minutes);
+            CREATE INDEX IF NOT EXISTS idx_schedules_prof_dept_day ON schedules(professor, department, day);
+            CREATE INDEX IF NOT EXISTS idx_schedules_section ON schedules(program, department, year, semester);
+            CREATE INDEX IF NOT EXISTS idx_professor_programs_prof_id ON professor_programs(professor_id);
+            CREATE INDEX IF NOT EXISTS idx_curricula_lookup ON curricula(program_id, year, semester);
+            CREATE INDEX IF NOT EXISTS idx_programs_department_id ON programs(department_id);
+            CREATE INDEX IF NOT EXISTS idx_rooms_building_floor ON rooms(building, floor);
             """
         )
         columns = {
@@ -114,15 +121,21 @@ class Database:
             self.connection.execute(
                 "ALTER TABLE schedules ADD COLUMN room_floor TEXT NOT NULL DEFAULT ''"
             )
-        rows = self.connection.execute(
-            "SELECT id, subject FROM curricula WHERE subject_code IS NULL"
-        ).fetchall()
-        for row in rows:
-            code, name = self._split_subject(row["subject"])
-            self.connection.execute(
-                "UPDATE curricula SET subject_code = ?, subject_name = ? WHERE id = ?",
-                (code, name, row["id"]),
-            )
+        # Single bulk UPDATE with CASE/WHERE pattern for curriculum subject split migration
+        self.connection.execute(
+            """
+            UPDATE curricula
+            SET subject_code = CASE
+                    WHEN instr(subject, ' - ') > 0 THEN substr(subject, 1, instr(subject, ' - ') - 1)
+                    ELSE ''
+                END,
+                subject_name = CASE
+                    WHEN instr(subject, ' - ') > 0 THEN substr(subject, instr(subject, ' - ') + 3)
+                    ELSE subject
+                END
+            WHERE subject_code IS NULL
+            """
+        )
         self.connection.commit()
 
     @staticmethod
@@ -136,44 +149,53 @@ class Database:
     def _format_subject(code: str, name: str) -> str:
         return f"{code} - {name}" if code and name else code or name
 
-    def load_departments(self) -> list[Department]:
-        rows = self.connection.execute(
-            "SELECT id, code, name FROM departments ORDER BY code"
-        ).fetchall()
-        departments = []
-        for row in rows:
-            programs = self.connection.execute(
-                "SELECT name FROM programs WHERE department_id = ? ORDER BY id",
-                (row["id"],),
-            ).fetchall()
-            departments.append(Department(row["code"], row["name"], [item["name"] for item in programs]))
-        return departments
-
-    def load_professors(self) -> list[Professor]:
-        rows = self.connection.execute(
+    def load_departments(self, as_dict: bool = False) -> list[Department] | list[dict]:
+        cursor = self.connection.cursor()
+        rows = cursor.execute(
             """
-            SELECT p.id, p.name, d.code AS department
+            SELECT d.code, d.name, p.name
+            FROM departments d
+            LEFT JOIN programs p ON p.department_id = d.id
+            ORDER BY d.code, p.id
+            """
+        ).fetchall()
+        dept_map: dict[str, Department] = {}
+        for code, name, prog_name in rows:
+            if code not in dept_map:
+                dept_map[code] = Department(code, name, [])
+            if prog_name is not None:
+                dept_map[code].programs.append(prog_name)
+        depts = list(dept_map.values())
+        if as_dict:
+            return [{"code": d.code, "name": d.name, "programs": d.programs} for d in depts]
+        return depts
+
+    def load_professors(self, as_dict: bool = False) -> list[Professor] | list[dict]:
+        cursor = self.connection.cursor()
+        rows = cursor.execute(
+            """
+            SELECT p.id, p.name, d.code, d_prog.code, pr.name
             FROM professors p
             JOIN departments d ON d.id = p.department_id
-            ORDER BY p.id
+            LEFT JOIN professor_programs pp ON pp.professor_id = p.id
+            LEFT JOIN programs pr ON pr.id = pp.program_id
+            LEFT JOIN departments d_prog ON d_prog.id = pr.department_id
+            ORDER BY p.id, pr.id
             """
         ).fetchall()
-        professors = []
-        for row in rows:
-            program_rows = self.connection.execute(
-                """
-                SELECT d.code, pr.name
-                FROM professor_programs pp
-                JOIN programs pr ON pr.id = pp.program_id
-                JOIN departments d ON d.id = pr.department_id
-                WHERE pp.professor_id = ?
-                ORDER BY pr.id
-                """,
-                (row["id"],),
-            ).fetchall()
-            programs = [(item["code"], item["name"]) for item in program_rows]
-            professors.append(Professor(row["name"], row["department"], programs, row["id"]))
-        return professors
+        prof_map: dict[int, Professor] = {}
+        for prof_id, prof_name, dept_code, prog_dept, prog_name in rows:
+            if prof_id not in prof_map:
+                prof_map[prof_id] = Professor(prof_name, dept_code, [], prof_id)
+            if prog_name is not None and prog_dept is not None:
+                prof_map[prof_id].programs.append((prog_dept, prog_name))
+        profs = list(prof_map.values())
+        if as_dict:
+            return [
+                {"id": p.id, "name": p.name, "department": p.department, "programs": p.programs}
+                for p in profs
+            ]
+        return profs
 
     def _resolve_program_ids(self, programs: list[tuple[str, str]]) -> list[int]:
         ids = []
@@ -532,11 +554,52 @@ class Database:
             same_room = building_match and floor_match
         return same_professor or same_section or same_room
 
-    def conflicting_schedules(self, schedule: Schedule,
-                              exclude_id: int | None = None) -> list[Schedule]:
-        return [existing for existing in self.load_schedules()
-                if existing.id != exclude_id
-                and self.schedules_conflict(existing, schedule)]
+    def conflicting_schedules(
+        self, schedule: Schedule, exclude_id: int | None = None
+    ) -> list[Schedule]:
+        prof_pattern = schedule.professor.strip().lower()
+        room_pattern = schedule.room.strip().lower()
+        cursor = self.connection.cursor()
+        query = """
+            SELECT department, program, subject, subject_type, professor, day,
+                   start_minutes, end_minutes, year, semester, room, id,
+                   room_building, room_floor
+            FROM schedules
+            WHERE day = ?
+              AND start_minutes < ?
+              AND end_minutes > ?
+              AND (
+                  lower(trim(professor)) = ?
+                  OR (department = ? AND program = ? AND year = ? AND semester = ?)
+                  OR (? != '' AND lower(trim(room)) = ?)
+              )
+        """
+        params: list[object] = [
+            schedule.day,
+            schedule.end_minutes,
+            schedule.start_minutes,
+            prof_pattern,
+            schedule.department,
+            schedule.program,
+            schedule.year,
+            schedule.semester,
+            room_pattern,
+            room_pattern,
+        ]
+        if exclude_id is not None:
+            query += " AND id != ?"
+            params.append(exclude_id)
+
+        query += """
+            ORDER BY CASE day
+                WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
+                WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6
+                ELSE 7 END,
+                start_minutes, professor, subject
+        """
+        rows = cursor.execute(query, params).fetchall()
+        candidates = [Schedule(*r) for r in rows]
+        return [c for c in candidates if self.schedules_conflict(c, schedule)]
 
     def update_schedule(self, schedule: Schedule) -> None:
         self._validate_schedule(schedule)
@@ -589,10 +652,14 @@ class Database:
             )
             schedule.id = cursor.lastrowid
 
-    def load_schedules(self) -> list[Schedule]:
-        rows = self.connection.execute(
+    def load_schedules(self, as_dict: bool = False) -> list[Schedule] | list[dict]:
+        cursor = self.connection.cursor()
+        rows = cursor.execute(
             """
-            SELECT * FROM schedules
+            SELECT department, program, subject, subject_type, professor, day,
+                   start_minutes, end_minutes, year, semester, room, id,
+                   room_building, room_floor
+            FROM schedules
             ORDER BY CASE day
                 WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
                 WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6
@@ -600,18 +667,17 @@ class Database:
                 start_minutes, professor, subject
             """
         ).fetchall()
-        return [
-            Schedule(
-                department=row["department"], program=row["program"],
-                subject=row["subject"], subject_type=row["subject_type"],
-                professor=row["professor"], day=row["day"],
-                start_minutes=row["start_minutes"], end_minutes=row["end_minutes"],
-                year=row["year"], semester=row["semester"], room=row["room"],
-                room_building=row["room_building"], room_floor=row["room_floor"],
-                id=row["id"],
-            )
-            for row in rows
-        ]
+        if as_dict:
+            return [
+                {
+                    "department": r[0], "program": r[1], "subject": r[2], "subject_type": r[3],
+                    "professor": r[4], "day": r[5], "start_minutes": r[6], "end_minutes": r[7],
+                    "year": r[8], "semester": r[9], "room": r[10], "id": r[11],
+                    "room_building": r[12], "room_floor": r[13],
+                }
+                for r in rows
+            ]
+        return [Schedule(*r) for r in rows]
 
     def load_all_rooms(self) -> list[str]:
         rows = self.connection.execute(

@@ -3,14 +3,14 @@
 from dataclasses import dataclass, field
 
 
-@dataclass
+@dataclass(slots=True)
 class Department:
     code: str
     name: str
     programs: list[str] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(slots=True)
 class Professor:
     name: str
     department: str
@@ -25,7 +25,7 @@ def format_minutes(minutes: int) -> str:
     return f"{display_hour}:{minute:02d} {suffix}"
 
 
-@dataclass
+@dataclass(slots=True)
 class Schedule:
     """One class assignment: program, subject, professor, day, and time range."""
 
