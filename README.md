@@ -1,4 +1,4 @@
-JUSTEEN JAMES TOLENITINO as developer.
+# GROUP 4 Project
 
 # School Class Scheduling & Academic Management System
 
@@ -41,10 +41,10 @@ The system is partitioned into two specialized applications sharing a common SQL
 
 Access to both administrative consoles is secured via user authentication:
 
-| Application | Username | Default Password | Role |
-| :--- | :--- | :--- | :--- |
-| **Admin 1** | `admin1` | `group4` | Curriculum & Academic Structure Administrator |
-| **Admin 2** | `admin2` | `group4` | Class Timetable & Scheduling Administrator |
+| Application | Username | Default Password | Role                                          |
+| :---------- | :------- | :--------------- | :-------------------------------------------- |
+| **Admin 1** | `admin1` | `group4`         | Curriculum & Academic Structure Administrator |
+| **Admin 2** | `admin2` | `group4`         | Class Timetable & Scheduling Administrator    |
 
 ---
 
@@ -97,7 +97,7 @@ flowchart TD
     end
 ```
 
-![Database Round-Trips & Time Complexity](docs/images/complexity_chart.svg)
+![Database Round-Trips & Time Complexity|699](docs/images/complexity_chart.svg)
 
 ```mermaid
 xychart-beta
@@ -106,6 +106,129 @@ xychart-beta
     y-axis "Database Round-Trips" 0 --> 1050
     bar [11, 51, 101, 501, 1001]
     line [1, 1, 1, 1, 1]
+```
+
+### Reference Algorithm Code
+
+The following excerpts show how the scheduling database applies the documented
+algorithms. Conflict checks first use the indexed day and time range to reduce
+the candidate set, then apply the professor, student-section, and room rules
+in Python. Time intervals use half-open ranges, so a class ending at 10:00
+does not conflict with another class starting at 10:00.
+
+```python
+def schedules_conflict(first: Schedule, second: Schedule) -> bool:
+    """Return True when overlapping entries share a scheduling resource."""
+    if first.day != second.day:
+        return False
+
+    overlaps = (
+        first.start_minutes < second.end_minutes
+        and second.start_minutes < first.end_minutes
+    )
+    if not overlaps:
+        return False
+
+    same_professor = (
+        first.professor.strip().lower()
+        == second.professor.strip().lower()
+    )
+    same_section = (
+        first.department,
+        first.program,
+        first.year,
+        first.semester,
+    ) == (
+        second.department,
+        second.program,
+        second.year,
+        second.semester,
+    )
+
+    same_room = False
+    if first.room.strip() and (
+        first.room.strip().lower() == second.room.strip().lower()
+    ):
+        building_match = (
+            not first.room_building
+            or not second.room_building
+            or first.room_building.strip().lower()
+            == second.room_building.strip().lower()
+        )
+        floor_match = (
+            not first.room_floor
+            or not second.room_floor
+            or first.room_floor.strip().lower()
+            == second.room_floor.strip().lower()
+        )
+        same_room = building_match and floor_match
+
+    return same_professor or same_section or same_room
+
+
+def conflicting_schedules(database, schedule, exclude_id=None):
+    """Filter indexed SQL candidates with the complete conflict rules."""
+    query = """
+        SELECT department, program, subject, subject_type, professor, day,
+               start_minutes, end_minutes, year, semester, room, id,
+               room_building, room_floor
+        FROM schedules
+        WHERE day = ?
+          AND start_minutes < ?
+          AND end_minutes > ?
+          AND (
+              lower(trim(professor)) = ?
+              OR (department = ? AND program = ? AND year = ? AND semester = ?)
+              OR (? != '' AND lower(trim(room)) = ?)
+          )
+    """
+    params = [
+        schedule.day,
+        schedule.end_minutes,
+        schedule.start_minutes,
+        schedule.professor.strip().lower(),
+        schedule.department,
+        schedule.program,
+        schedule.year,
+        schedule.semester,
+        schedule.room.strip().lower(),
+        schedule.room.strip().lower(),
+    ]
+
+    if exclude_id is not None:
+        query += " AND id != ?"
+        params.append(exclude_id)
+
+    candidates = database.connection.execute(query, params).fetchall()
+    return [
+        candidate
+        for candidate in candidates
+        if schedules_conflict(schedule, Schedule(*candidate))
+    ]
+```
+
+For parent-child data such as departments and their programs, one `LEFT JOIN`
+is streamed through an insertion-ordered dictionary. This preserves parents
+with no children while grouping every joined row in one $O(R)$ pass:
+
+```python
+rows = connection.execute(
+    """
+    SELECT d.code, d.name, p.name
+    FROM departments d
+    LEFT JOIN programs p ON p.department_id = d.id
+    ORDER BY d.code, p.id
+    """
+).fetchall()
+
+departments = {}
+for code, name, program_name in rows:
+    if code not in departments:
+        departments[code] = Department(code, name, [])
+    if program_name is not None:
+        departments[code].programs.append(program_name)
+
+result = list(departments.values())
 ```
 
 #### Time & Space Complexity Breakdown
