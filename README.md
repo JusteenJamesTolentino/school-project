@@ -97,13 +97,15 @@ flowchart TD
     end
 ```
 
+![Database Round-Trips & Time Complexity](docs/images/complexity_chart.svg)
+
 ```mermaid
 xychart-beta
     title "Database Round-Trips vs Entity Count (N)"
     x-axis ["10", "50", "100", "500", "1000"]
     y-axis "Database Round-Trips" 0 --> 1050
-    line "Legacy N+1 (1 + N Round-Trips)" [11, 51, 101, 501, 1001]
-    line "Optimized (Single JOIN O(1))" [1, 1, 1, 1, 1]
+    bar [11, 51, 101, 501, 1001]
+    line [1, 1, 1, 1, 1]
 ```
 
 #### Time & Space Complexity Breakdown
