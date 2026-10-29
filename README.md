@@ -233,12 +233,12 @@ result = list(departments.values())
 
 #### Time & Space Complexity Breakdown
 
-| Layer / Metric | Legacy Pattern ($N+1$) | Optimized Pattern (Single JOIN + Hash Group-By) | Improvement Factor |
-| :--- | :--- | :--- | :--- |
-| **Database Round-Trips** | $O(N)$ (1 parent + $N$ child queries) | **$O(1)$** (1 single relational query) | **$N\times$ fewer round-trips** |
-| **Engine Execution** | $N \times (\text{Query Parse} + \text{B-Tree Seek})$ | **$1 \times \text{Relational Merge Scan}$** | **Executed in SQLite C-core** |
-| **Python Time Complexity** | $O(N \times \text{IPC / Context Switch Latency})$ | **$O(R)$** ($R = \text{total rows}$, linear pass) | **Sub-millisecond memory stitch** |
-| **Memory Allocation** | Dynamic per-instance `__dict__` overhead | **`__slots__` + positional tuple unpack** | **~60% less memory churn** |
+| Layer / Metric             | Legacy Pattern ($N+1$)                               | Optimized Pattern (Single JOIN + Hash Group-By)   | Improvement Factor                |
+| :------------------------- | :--------------------------------------------------- | :------------------------------------------------ | :-------------------------------- |
+| **Database Round-Trips**   | $O(N)$ (1 parent + $N$ child queries)                | **$O(1)$** (1 single relational query)            | **$N\times$ fewer round-trips**   |
+| **Engine Execution**       | $N \times (\text{Query Parse} + \text{B-Tree Seek})$ | **$1 \times \text{Relational Merge Scan}$**       | **Executed in SQLite C-core**     |
+| **Python Time Complexity** | $O(N \times \text{IPC / Context Switch Latency})$    | **$O(R)$** ($R = \text{total rows}$, linear pass) | **Sub-millisecond memory stitch** |
+| **Memory Allocation**      | Dynamic per-instance `__dict__` overhead             | **`__slots__` + positional tuple unpack**         | **~60% less memory churn**        |
 
 3. **Hot-Lookup SQLite Indexes**:
    - `schedules(day, start_minutes, end_minutes)`: Accelerates real-time time-window conflict checks.

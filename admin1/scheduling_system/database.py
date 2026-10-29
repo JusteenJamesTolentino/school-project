@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Literal, overload
 
 from scheduling_system.models import Department, Professor, Schedule
 
@@ -149,7 +150,17 @@ class Database:
     def _format_subject(code: str, name: str) -> str:
         return f"{code} - {name}" if code and name else code or name
 
-    def load_departments(self, as_dict: bool = False) -> list[Department] | list[dict]:
+    @overload
+    def load_departments(self, as_dict: Literal[False] = False) -> list[Department]:
+        ...
+
+    @overload
+    def load_departments(self, as_dict: Literal[True]) -> list[dict[str, object]]:
+        ...
+
+    def load_departments(
+        self, as_dict: bool = False
+    ) -> list[Department] | list[dict[str, object]]:
         cursor = self.connection.cursor()
         rows = cursor.execute(
             """
@@ -170,7 +181,17 @@ class Database:
             return [{"code": d.code, "name": d.name, "programs": d.programs} for d in depts]
         return depts
 
-    def load_professors(self, as_dict: bool = False) -> list[Professor] | list[dict]:
+    @overload
+    def load_professors(self, as_dict: Literal[False] = False) -> list[Professor]:
+        ...
+
+    @overload
+    def load_professors(self, as_dict: Literal[True]) -> list[dict[str, object]]:
+        ...
+
+    def load_professors(
+        self, as_dict: bool = False
+    ) -> list[Professor] | list[dict[str, object]]:
         cursor = self.connection.cursor()
         rows = cursor.execute(
             """
@@ -652,7 +673,17 @@ class Database:
             )
             schedule.id = cursor.lastrowid
 
-    def load_schedules(self, as_dict: bool = False) -> list[Schedule] | list[dict]:
+    @overload
+    def load_schedules(self, as_dict: Literal[False] = False) -> list[Schedule]:
+        ...
+
+    @overload
+    def load_schedules(self, as_dict: Literal[True]) -> list[dict[str, object]]:
+        ...
+
+    def load_schedules(
+        self, as_dict: bool = False
+    ) -> list[Schedule] | list[dict[str, object]]:
         cursor = self.connection.cursor()
         rows = cursor.execute(
             """
